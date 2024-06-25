@@ -193,7 +193,7 @@ public class DataLoader {
                 .map(line -> {
                     String[] parts = line.split(",", 4);
                     if (parts.length != 4) {
-                        throw new IllegalArgumentException("Invalid record: " + line);
+                        throw new IllegalArgumentException("invalid record: " + line);
                     }
                     return new Tuple4<>(parts[0], parts[1], parts[2], parts[3]);
                 })
