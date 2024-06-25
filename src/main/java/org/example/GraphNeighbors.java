@@ -1,74 +1,3 @@
-//package org.example;
-//
-//import org.apache.flink.api.common.state.ListState;
-//import org.apache.flink.api.common.state.ListStateDescriptor;
-//import org.apache.flink.api.common.typeinfo.Types;
-//import org.apache.flink.api.java.tuple.Tuple4;
-//import org.apache.flink.streaming.api.datastream.DataStream;
-//import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-//import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
-//import org.apache.flink.util.Collector;
-//
-//public class GraphNeighbors {
-//
-//    public static void main(String[] args) throws Exception {
-//        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-//
-//        DataStream<Tuple4<String, String, String, String>> edges = env.readTextFile("/Users/naima/Desktop/summer24/reddit/reddit-final-smaller.csv")
-//                .filter(line -> !line.startsWith("Src node")) // Skip the header row
-//                .map(line -> {
-//                    String[] fields = line.split(",", 4);
-//                    return Tuple4.of(
-//                            fields[0].trim(),
-//                            fields[1].trim(),
-//                            fields[2].trim(),
-//                            fields[3].trim()
-//                    );
-//                })
-//                .returns(Types.TUPLE(Types.STRING, Types.STRING, Types.STRING, Types.STRING));
-//
-//        DataStream<String> neighbors = edges.keyBy(edge -> edge.f0)
-//                .process(new NeighborExtractor("2gv2qt")); // specify the node ID for which you want to get neighbors
-//
-//        neighbors.print();
-//
-//        env.execute("Graph Neighbors");
-//    }
-//
-//    public static class NeighborExtractor extends KeyedProcessFunction<String, Tuple4<String, String, String, String>, String> {
-//        private final String targetNode;
-//        private ListState<Tuple4<String, String, String, String>> neighborState;
-//
-//        public NeighborExtractor(String targetNode) {
-//            this.targetNode = targetNode;
-//        }
-//
-//        @Override
-//        public void open(org.apache.flink.configuration.Configuration parameters) throws Exception {
-//            ListStateDescriptor<Tuple4<String, String, String, String>> descriptor =
-//                    new ListStateDescriptor<>(
-//                            "neighbors",
-//                            Types.TUPLE(Types.STRING, Types.STRING, Types.STRING, Types.STRING));
-//            neighborState = getRuntimeContext().getListState(descriptor);
-//        }
-//
-//        @Override
-//        public void processElement(
-//                Tuple4<String, String, String, String> value,
-//                Context ctx,
-//                Collector<String> out) throws Exception {
-//
-//            if (value.f0.equals(targetNode)) {
-//                neighborState.add(value);
-//                out.collect("Neighbor: " + value.f2 + ", Features: " + value.f3);
-//            }
-//        }
-//    }
-//}
-
-
-
-
 
 package org.example;
 
@@ -80,41 +9,76 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
+import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
+import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.util.Collector;
+import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.java.tuple.Tuple2;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class GraphNeighbors {
 
-    public static class QueryFunction extends KeyedProcessFunction<String, String, String> {
-        private transient ValueState<String> featuresState;
+    public static void main(String[] args) throws Exception {
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+        // For now, we use a hardcoded target node
+        String targetNode = "2gv2qt";
+
+        // Load the state from the savepoint
+        String savepointPath = "file:///Users/naima/Desktop/summer24/restarting/fourth/savepoints/savepoint-ae74c1-cf13278768b4";
+        env.getCheckpointConfig().setCheckpointStorage(savepointPath);
+
+        // Create a stream with the target node for processing
+        DataStream<String> targetNodeStream = env.fromElements(targetNode);
+
+        // Process to find the 2-hop neighbors
+        DataStream<Tuple2<String, String>> firstHopNeighbors = targetNodeStream
+                .keyBy(node -> node)
+                .process(new FirstHopNeighborProcessor());
+
+        DataStream<String> resultStream = firstHopNeighbors
+                .keyBy(tuple -> tuple.f1)
+                .process(new SecondHopNeighborProcessor());
+
+        // Print the results
+        resultStream.addSink(new PrintSinkFunction<>());
+
+        env.execute("GraphNeighborsQuery");
+    }
+
+    public static class FirstHopNeighborProcessor extends KeyedProcessFunction<String, String, Tuple2<String, String>> {
         private transient ListState<String> neighborsState;
 
         @Override
         public void open(Configuration parameters) {
-            featuresState = getRuntimeContext().getState(new ValueStateDescriptor<>("features", String.class));
             neighborsState = getRuntimeContext().getListState(new ListStateDescriptor<>("neighbors", String.class));
         }
 
         @Override
-        public void processElement(String targetNode, Context ctx, Collector<String> out) throws Exception {
-            Iterable<String> neighbors = neighborsState.get();
-            for (String neighbor : neighbors) {
-                out.collect("tagrt node " + targetNode + ", Features: " + featuresState.value() + ", nbr: " + neighbor);
+        public void processElement(String targetNode, Context ctx, Collector<Tuple2<String, String>> out) throws Exception {
+            for (String neighbor : neighborsState.get()) {
+                out.collect(new Tuple2<>(targetNode, neighbor));
             }
         }
     }
 
-    public static void main(String[] args) throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+    public static class SecondHopNeighborProcessor extends KeyedProcessFunction<String, Tuple2<String, String>, String> {
+        private transient ListState<String> neighborsState;
 
-        //state has been populated by the datalaoder
+        @Override
+        public void open(Configuration parameters) {
+            neighborsState = getRuntimeContext().getListState(new ListStateDescriptor<>("neighbors", String.class));
+        }
 
-        DataStream<String> queryStream = env.fromElements("2gv2qt");
-
-        queryStream
-                .keyBy(value -> value)
-                .process(new QueryFunction())
-                .print();
-
-        env.execute("graph nbrs");
+        @Override
+        public void processElement(Tuple2<String, String> value, Context ctx, Collector<String> out) throws Exception {
+            String firstHopNeighbor = value.f1;
+            for (String secondHopNeighbor : neighborsState.get()) {
+                out.collect("Target Node: " + value.f0 + ", First Hop Neighbor: " + firstHopNeighbor + ", Second Hop Neighbor: " + secondHopNeighbor);
+            }
+        }
     }
 }
